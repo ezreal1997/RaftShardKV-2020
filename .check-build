@@ -48,6 +48,7 @@ main() {
     cd "$tmpdir"
 
     # check out reference files
+    # shellcheck disable=SC2068
     for f in ${REFERENCE_FILES[@]}; do
         mkdir -p "$(dirname $f)"
         git --git-dir="$orig/.git" show "FETCH_HEAD:$f" > "$f"
@@ -113,6 +114,7 @@ check_cmd() {
         echo >&2
         echo "The build failed while trying to run the following command:" >&2
         echo >&2
+        # shellcheck disable=SC2145
         echo "$ $@" >&2
         echo "  (cwd: ${PWD#$tmpdir/})" >&2
         exit 1
