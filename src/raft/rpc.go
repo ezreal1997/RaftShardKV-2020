@@ -72,6 +72,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
+	defer DPrintf("worker %v commit index %v", rf.me, rf.commitIndex)
 
 	reply.Term = rf.term
 	if rf.term > args.Term {
@@ -83,5 +84,34 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.changeRole(Follower)
 	rf.resetElectionTimer()
 
+	_, lastLogIndex := rf.getLastLogTermIndex()
+	if args.PreLogIndex == lastLogIndex {
+		if args.PreLogIndex < 0 || rf.logEntries[args.PreLogIndex].Term == args.PreLogTerm {
+			reply.Success = true
+			rf.logEntries = append(rf.logEntries[:args.PreLogIndex+1], args.Entries...)
+			_, idx := rf.getLastLogTermIndex()
+			reply.NextIndex = idx + 1
+		} else {
+			reply.Success = false
+			idx := args.PreLogIndex
+			term := rf.logEntries[idx].Term
+			for idx > rf.commitIndex && rf.logEntries[idx].Term == term {
+				idx -= 1
+			}
+			reply.NextIndex = idx + 1
+		}
+	} else if args.PreLogIndex > lastLogIndex {
+		reply.Success = false
+		reply.NextIndex = lastLogIndex + 1
+	} else {
+		reply.Success = false
+		reply.NextIndex = args.PreLogIndex + 1
+	}
+
+	if reply.Success {
+		if rf.commitIndex < args.LeaderCommit {
+			rf.commitIndex = args.LeaderCommit
+		}
+	}
 	rf.mu.Unlock()
 }

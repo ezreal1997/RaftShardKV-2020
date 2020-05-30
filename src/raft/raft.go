@@ -212,12 +212,19 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	_, lastIndex := rf.getLastLogTermIndex()
+	index, term, isLeader := lastIndex+1, rf.term, rf.role == Leader
 
-	// Your code here (2B).
-
+	if isLeader {
+		rf.logEntries = append(rf.logEntries, LogEntry{
+			Term:    rf.term,
+			Command: command,
+		})
+		rf.matchIndex[rf.me] = index
+	}
+	rf.resetAppendEntriesTimers()
 	return index, term, isLeader
 }
 
@@ -265,7 +272,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		term:                0,
 		voteFor:             -1,
 		role:                Follower,
-		logEntries:          make([]LogEntry, 1),
+		logEntries:          make([]LogEntry, 0),
+		commitIndex:         -1,
 		nextIndex:           make([]int, len(peers)),
 		matchIndex:          make([]int, len(peers)),
 		electionTimer:       time.NewTimer(randElectionTimeout()),
@@ -274,6 +282,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	}
 	for i := range rf.peers {
 		rf.appendEntriesTimers[i] = time.NewTimer(AppendEntriesTimeout)
+		rf.matchIndex[i] = -1
 	}
 
 	// Your initialization code here (2A, 2B, 2C).
@@ -312,6 +321,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 }
 
 func (rf *Raft) getLastLogTermIndex() (int, int) {
+	if len(rf.logEntries) == 0 {
+		return -1, -1
+	}
 	return rf.logEntries[len(rf.logEntries)-1].Term, len(rf.logEntries) - 1
 }
 
@@ -433,10 +445,7 @@ func (rf *Raft) appendEntriesToPeer(peerIdx int) {
 			rf.mu.Unlock()
 			return
 		}
-		args := AppendEntriesArgs{
-			Term:     rf.term,
-			LeaderID: rf.me,
-		}
+		args := rf.getAppendEntriesArgs(peerIdx)
 		rf.resetAppendEntriesTimer(peerIdx)
 		rf.mu.Unlock()
 
@@ -457,6 +466,7 @@ func (rf *Raft) appendEntriesToPeer(peerIdx int) {
 		}
 
 		rf.mu.Lock()
+		DPrintf("master %v hb worker %v: %+v, %+v", rf.me, peerIdx, args, reply)
 		if reply.Term > rf.term {
 			rf.changeRole(Follower)
 			rf.resetElectionTimer()
@@ -471,10 +481,76 @@ func (rf *Raft) appendEntriesToPeer(peerIdx int) {
 		}
 
 		if reply.Success {
+			if reply.NextIndex > rf.nextIndex[peerIdx] {
+				rf.nextIndex[peerIdx] = reply.NextIndex
+				rf.matchIndex[peerIdx] = reply.NextIndex - 1
+			}
+			if len(args.Entries) > 0 && args.Entries[len(args.Entries)-1].Term == rf.term {
+				// 只 commit 自己 term 的 index
+				rf.updateCommitIndex()
+			}
 			rf.mu.Unlock()
 			return
+		} else {
+			if reply.NextIndex > 0 {
+				rf.nextIndex[peerIdx] = reply.NextIndex
+				rf.mu.Unlock()
+				continue
+			}
 		}
-
 		rf.mu.Unlock()
+	}
+}
+
+func (rf *Raft) getAppendEntriesArgs(peerIdx int) AppendEntriesArgs {
+	preLogIndex, preLogTerm, logs := rf.getAppendLogs(peerIdx)
+	args := AppendEntriesArgs{
+		Term:         rf.term,
+		LeaderID:     rf.me,
+		PreLogIndex:  preLogIndex,
+		PreLogTerm:   preLogTerm,
+		Entries:      logs,
+		LeaderCommit: rf.commitIndex,
+	}
+	return args
+}
+
+func (rf *Raft) getAppendLogs(peerIdx int) (preLogIndex, preLogTerm int, res []LogEntry) {
+	nextIdx := rf.nextIndex[peerIdx]
+	lastLogTerm, lastLogIndex := rf.getLastLogTermIndex()
+
+	if nextIdx > lastLogIndex {
+		// 没有需要发送的 log
+		preLogIndex = lastLogIndex
+		preLogTerm = lastLogTerm
+		return
+	}
+
+	res = append([]LogEntry{}, rf.logEntries[nextIdx:]...)
+	preLogIndex = nextIdx - 1
+	if preLogIndex < 0 {
+		preLogTerm = -1
+	} else {
+		preLogTerm = rf.logEntries[preLogIndex].Term
+	}
+	return
+}
+
+func (rf *Raft) updateCommitIndex() {
+	for i := rf.commitIndex + 1; i < len(rf.logEntries); i++ {
+		count := 0
+		for _, m := range rf.matchIndex {
+			if m >= i {
+				count++
+				if count > len(rf.peers)/2 {
+					rf.commitIndex = i
+					break
+				}
+			}
+		}
+		if rf.commitIndex != i {
+			// index i 没有 commit, 结束 commit
+			break
+		}
 	}
 }
