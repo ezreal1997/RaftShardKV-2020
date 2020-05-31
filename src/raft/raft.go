@@ -462,6 +462,7 @@ func (rf *Raft) appendEntriesToPeer(peerIdx int) {
 			return
 		}
 		args := rf.getAppendEntriesArgs(peerIdx)
+		DPrintf("master %v to worker %v args %+v", rf.me, peerIdx, args)
 		rf.resetAppendEntriesTimer(peerIdx)
 		rf.mu.Unlock()
 
@@ -504,10 +505,12 @@ func (rf *Raft) appendEntriesToPeer(peerIdx int) {
 				// 只 commit 自己 term 的 index
 				rf.updateCommitIndex()
 			}
-			DPrintf("master %v entry %v commit %v next %v match %v", rf.me, rf.logEntries, rf.commitIndex, rf.nextIndex, rf.matchIndex)
+			DPrintf("success master %v entry %v commit %v next %v match %v", rf.me, rf.logEntries, rf.commitIndex, rf.nextIndex, rf.matchIndex)
 			rf.mu.Unlock()
 			return
 		}
+
+		DPrintf("fail master %v to worker %v reply %+v", rf.me, peerIdx, reply)
 
 		if reply.NextIndex > 0 {
 			rf.nextIndex[peerIdx] = reply.NextIndex

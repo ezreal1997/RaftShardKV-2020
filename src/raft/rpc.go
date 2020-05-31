@@ -108,7 +108,18 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if len(args.Entries) == 0 {
 			rf.logEntries = rf.logEntries[:args.PreLogIndex+1]
 			reply.Success = false
-			reply.NextIndex = args.PreLogIndex + 1
+			if rf.logEntries[args.PreLogIndex].Term == args.PreLogTerm {
+				reply.NextIndex = args.PreLogIndex + 1
+			} else {
+				term := rf.logEntries[args.PreLogIndex].Term
+				for idx >= 0 {
+					if rf.logEntries[idx].Term != term {
+						break
+					}
+					idx--
+				}
+				rf.logEntries = rf.logEntries[:idx+1]
+			}
 		} else {
 			reply.Success = true
 			for idx <= lastLogIndex && newLogIdx < len(args.Entries) {
