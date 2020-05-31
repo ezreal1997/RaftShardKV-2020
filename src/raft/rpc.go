@@ -72,7 +72,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
-	defer DPrintf("worker %v commit index %v", rf.me, rf.commitIndex)
 
 	reply.Term = rf.term
 	if rf.term > args.Term {
@@ -86,7 +85,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	_, lastLogIndex := rf.getLastLogTermIndex()
 	if args.PreLogIndex == lastLogIndex {
-		if args.PreLogIndex < 0 || rf.logEntries[args.PreLogIndex].Term == args.PreLogTerm {
+		if rf.logEntries[args.PreLogIndex].Term == args.PreLogTerm {
 			reply.Success = true
 			rf.logEntries = append(rf.logEntries[:args.PreLogIndex+1], args.Entries...)
 			_, idx := rf.getLastLogTermIndex()
@@ -104,14 +103,46 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		reply.NextIndex = lastLogIndex + 1
 	} else {
-		reply.Success = false
-		reply.NextIndex = args.PreLogIndex + 1
-	}
-
-	if reply.Success {
-		if rf.commitIndex < args.LeaderCommit {
-			rf.commitIndex = args.LeaderCommit
+		idx := args.PreLogIndex
+		newLogIdx := 0
+		if len(args.Entries) == 0 {
+			rf.logEntries = rf.logEntries[:args.PreLogIndex+1]
+			reply.Success = false
+			reply.NextIndex = args.PreLogIndex + 1
+		} else {
+			reply.Success = true
+			for idx <= lastLogIndex && newLogIdx < len(args.Entries) {
+				if rf.logEntries[idx].Term != args.Entries[newLogIdx].Term {
+					rf.logEntries = rf.logEntries[:idx]
+					reply.Success = false
+					reply.NextIndex = idx
+					break
+				}
+				idx++
+				newLogIdx++
+			}
+			if reply.Success {
+				if newLogIdx < len(args.Entries) {
+					rf.logEntries = append(rf.logEntries[:idx], args.Entries[newLogIdx:]...)
+					_, idx := rf.getLastLogTermIndex()
+					reply.NextIndex = idx + 1
+				} else {
+					reply.NextIndex = idx
+				}
+			}
 		}
 	}
+
+	if rf.commitIndex < args.LeaderCommit {
+		_, idx := rf.getLastLogTermIndex()
+		if idx > args.LeaderCommit {
+			rf.commitIndex = args.LeaderCommit
+		} else {
+			rf.commitIndex = idx
+		}
+		rf.notifyApplyCh <- struct{}{}
+	}
+
+	DPrintf("worker %v entry %v commit %v next %v match %v", rf.me, rf.logEntries, rf.commitIndex, rf.nextIndex, rf.matchIndex)
 	rf.mu.Unlock()
 }

@@ -34,6 +34,7 @@ const (
 	ElectionTimeout      = time.Millisecond * 300
 	AppendEntriesTimeout = time.Millisecond * 150
 	RPCTimeout           = time.Millisecond * 100
+	ApplyInterval        = time.Millisecond * 100
 )
 
 type Role int
@@ -84,8 +85,10 @@ type Raft struct {
 
 	electionTimer       *time.Timer
 	appendEntriesTimers []*time.Timer
+	applyTimer          *time.Timer
 
-	stopCh chan struct{}
+	notifyApplyCh chan struct{}
+	stopCh        chan struct{}
 
 	voteFor     int
 	logEntries  []LogEntry
@@ -272,20 +275,36 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		term:                0,
 		voteFor:             -1,
 		role:                Follower,
-		logEntries:          make([]LogEntry, 0),
-		commitIndex:         -1,
+		logEntries:          make([]LogEntry, 1),
+		commitIndex:         0,
 		nextIndex:           make([]int, len(peers)),
 		matchIndex:          make([]int, len(peers)),
 		electionTimer:       time.NewTimer(randElectionTimeout()),
 		appendEntriesTimers: make([]*time.Timer, len(peers)),
+		applyTimer:          time.NewTimer(ApplyInterval),
+		notifyApplyCh:       make(chan struct{}, 100),
 		stopCh:              make(chan struct{}),
+		lastApplied:         0,
 	}
 	for i := range rf.peers {
 		rf.appendEntriesTimers[i] = time.NewTimer(AppendEntriesTimeout)
-		rf.matchIndex[i] = -1
+		rf.nextIndex[i] = 1
 	}
 
 	// Your initialization code here (2A, 2B, 2C).
+	// apply log
+	go func() {
+		for {
+			select {
+			case <-rf.stopCh:
+				return
+			case <-rf.applyTimer.C:
+				rf.notifyApplyCh <- struct{}{}
+			case <-rf.notifyApplyCh:
+				rf.startApplyLogs()
+			}
+		}
+	}()
 	// 发起投票
 	go func() {
 		for {
@@ -321,9 +340,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 }
 
 func (rf *Raft) getLastLogTermIndex() (int, int) {
-	if len(rf.logEntries) == 0 {
-		return -1, -1
-	}
 	return rf.logEntries[len(rf.logEntries)-1].Term, len(rf.logEntries) - 1
 }
 
@@ -438,7 +454,7 @@ func (rf *Raft) resetAppendEntriesTimer(peerIdx int) {
 func (rf *Raft) appendEntriesToPeer(peerIdx int) {
 	reqTimer := time.NewTimer(RPCTimeout)
 	defer reqTimer.Stop()
-	for ; !rf.killed(); time.Sleep(10 * time.Millisecond) {
+	for ; ; time.Sleep(10 * time.Millisecond) {
 		rf.mu.Lock()
 		if rf.role != Leader {
 			rf.resetAppendEntriesTimer(peerIdx)
@@ -466,7 +482,6 @@ func (rf *Raft) appendEntriesToPeer(peerIdx int) {
 		}
 
 		rf.mu.Lock()
-		DPrintf("master %v hb worker %v: %+v, %+v", rf.me, peerIdx, args, reply)
 		if reply.Term > rf.term {
 			rf.changeRole(Follower)
 			rf.resetElectionTimer()
@@ -489,15 +504,17 @@ func (rf *Raft) appendEntriesToPeer(peerIdx int) {
 				// 只 commit 自己 term 的 index
 				rf.updateCommitIndex()
 			}
+			DPrintf("master %v entry %v commit %v next %v match %v", rf.me, rf.logEntries, rf.commitIndex, rf.nextIndex, rf.matchIndex)
 			rf.mu.Unlock()
 			return
-		} else {
-			if reply.NextIndex > 0 {
-				rf.nextIndex[peerIdx] = reply.NextIndex
-				rf.mu.Unlock()
-				continue
-			}
 		}
+
+		if reply.NextIndex > 0 {
+			rf.nextIndex[peerIdx] = reply.NextIndex
+			rf.mu.Unlock()
+			continue
+		}
+
 		rf.mu.Unlock()
 	}
 }
@@ -526,7 +543,7 @@ func (rf *Raft) getAppendLogs(peerIdx int) (preLogIndex, preLogTerm int, res []L
 		return
 	}
 
-	res = append([]LogEntry{}, rf.logEntries[nextIdx:]...)
+	res = append(make([]LogEntry, 0), rf.logEntries[nextIdx:]...)
 	preLogIndex = nextIdx - 1
 	if preLogIndex < 0 {
 		preLogTerm = -1
@@ -537,12 +554,14 @@ func (rf *Raft) getAppendLogs(peerIdx int) (preLogIndex, preLogTerm int, res []L
 }
 
 func (rf *Raft) updateCommitIndex() {
+	hasCommit := false
 	for i := rf.commitIndex + 1; i < len(rf.logEntries); i++ {
 		count := 0
 		for _, m := range rf.matchIndex {
 			if m >= i {
 				count++
 				if count > len(rf.peers)/2 {
+					hasCommit = true
 					rf.commitIndex = i
 					break
 				}
@@ -552,5 +571,35 @@ func (rf *Raft) updateCommitIndex() {
 			// index i 没有 commit, 结束 commit
 			break
 		}
+	}
+	if hasCommit {
+		rf.notifyApplyCh <- struct{}{}
+	}
+}
+
+func (rf *Raft) startApplyLogs() {
+	defer rf.applyTimer.Reset(ApplyInterval)
+	rf.mu.Lock()
+
+	if rf.commitIndex <= rf.lastApplied {
+		rf.mu.Unlock()
+		return
+	}
+
+	msg := make([]ApplyMsg, 0, rf.commitIndex-rf.lastApplied)
+	for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+		msg = append(msg, ApplyMsg{
+			CommandValid: true,
+			Command:      rf.logEntries[i].Command,
+			CommandIndex: i,
+		})
+	}
+	rf.mu.Unlock()
+
+	for _, m := range msg {
+		rf.applyCh <- m
+		rf.mu.Lock()
+		rf.lastApplied = m.CommandIndex
+		rf.mu.Unlock()
 	}
 }
