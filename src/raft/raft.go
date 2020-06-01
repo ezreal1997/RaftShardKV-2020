@@ -505,7 +505,7 @@ func (rf *Raft) appendEntriesToPeer(peerIdx int) {
 				// 只 commit 自己 term 的 index
 				rf.updateCommitIndex()
 			}
-			DPrintf("success master %v entry %v commit %v next %v match %v", rf.me, rf.logEntries, rf.commitIndex, rf.nextIndex, rf.matchIndex)
+			DPrintf("success master %v to worker %v entry %v commit %v next %v match %v", rf.me, peerIdx, rf.logEntries, rf.commitIndex, rf.nextIndex, rf.matchIndex)
 			rf.mu.Unlock()
 			return
 		}
