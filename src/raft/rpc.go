@@ -92,14 +92,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			_, idx := rf.getLastLogTermIndex()
 			reply.NextIndex = idx + 1
 		} else {
+			// 这里如果 term 不相等只有可能是 worker 的 term 更小
 			reply.Success = false
 			idx := args.PreLogIndex
 			term := rf.logEntries[idx].Term
-			DPrintf("worker %v 1 idx %v term %v commit %v", rf.me, idx, term, rf.commitIndex)
 			for idx > rf.commitIndex && rf.logEntries[idx].Term == term {
 				idx -= 1
 			}
-			DPrintf("worker %v 1 idx %v term %v commit %v", rf.me, idx, term, rf.commitIndex)
 			rf.logEntries = rf.logEntries[:idx+1]
 			reply.NextIndex = idx + 1
 		}
@@ -112,6 +111,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		idx := args.PreLogIndex
 		newLogIdx := 0
 		if len(args.Entries) == 0 {
+			// worker 比 master entry 多
 			rf.logEntries = rf.logEntries[:args.PreLogIndex+1]
 			reply.Success = false
 			if rf.logEntries[args.PreLogIndex].Term == args.PreLogTerm {
@@ -127,6 +127,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				rf.logEntries = rf.logEntries[:idx+1]
 			}
 		} else {
+			// 比较 args 中的 entry 和自己的是否相同
 			reply.Success = true
 			for idx <= lastLogIndex && newLogIdx < len(args.Entries) {
 				if rf.logEntries[idx].Term != args.Entries[newLogIdx].Term {
@@ -140,6 +141,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 			if reply.Success {
 				if newLogIdx < len(args.Entries) {
+					// 比较完成之后 args 中还剩有 entry
 					rf.logEntries = append(rf.logEntries[:idx], args.Entries[newLogIdx:]...)
 					_, idx := rf.getLastLogTermIndex()
 					reply.NextIndex = idx + 1
