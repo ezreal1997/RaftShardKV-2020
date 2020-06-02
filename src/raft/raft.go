@@ -18,11 +18,16 @@ package raft
 //
 
 import (
+	"bytes"
+	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"go.uber.org/multierr"
+
+	"../labgob"
 	"../labrpc"
 )
 
@@ -115,13 +120,19 @@ func (rf *Raft) GetState() (int, bool) {
 //
 func (rf *Raft) persist() {
 	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	buf := new(bytes.Buffer)
+	enc := labgob.NewEncoder(buf)
+
+	if err := multierr.Combine(
+		enc.Encode(rf.term),
+		enc.Encode(rf.voteFor),
+		enc.Encode(rf.commitIndex),
+		enc.Encode(rf.logEntries),
+	); err != nil {
+		log.Fatalf("%v persist failed: %v", rf.me, err)
+	}
+
+	rf.persister.SaveRaftState(buf.Bytes())
 }
 
 //
@@ -132,18 +143,28 @@ func (rf *Raft) readPersist(data []byte) {
 		return
 	}
 	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	buf := bytes.NewBuffer(data)
+	dec := labgob.NewDecoder(buf)
+
+	var (
+		term        int
+		voteFor     int
+		commitIndex int
+		logs        []LogEntry
+	)
+
+	if err := multierr.Combine(
+		dec.Decode(&term),
+		dec.Decode(&voteFor),
+		dec.Decode(&commitIndex),
+		dec.Decode(&logs),
+	); err != nil {
+		log.Fatalf("%v read persist failed: %v", rf.me, err)
+	}
+	rf.term = term
+	rf.voteFor = voteFor
+	rf.commitIndex = commitIndex
+	rf.logEntries = logs
 }
 
 //
@@ -290,6 +311,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		rf.appendEntriesTimers[i] = time.NewTimer(AppendEntriesTimeout)
 		rf.nextIndex[i] = 1
 	}
+	// initialize from state persisted before a crash
+	rf.readPersist(persister.ReadRaftState())
 
 	// Your initialization code here (2A, 2B, 2C).
 	// apply log
@@ -332,9 +355,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			}
 		}(i)
 	}
-
-	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
 
 	return rf
 }
@@ -389,6 +409,7 @@ func (rf *Raft) startElection() {
 		LastLogIndex: lastLogIndex,
 		LastLogTerm:  lastLogTerm,
 	}
+	rf.persist()
 	rf.mu.Unlock()
 
 	resCount, grantedCount := 1, 1
@@ -408,6 +429,7 @@ func (rf *Raft) startElection() {
 					rf.term = reply.Term
 					rf.changeRole(Follower)
 					rf.resetElectionTimer()
+					rf.persist()
 				}
 				rf.mu.Unlock()
 			}
@@ -432,6 +454,7 @@ func (rf *Raft) startElection() {
 	rf.mu.Lock()
 	if rf.term == args.Term && rf.role == Candidate {
 		rf.changeRole(Leader)
+		rf.persist()
 	}
 	if rf.role == Leader {
 		rf.resetAppendEntriesTimers()
@@ -462,7 +485,6 @@ func (rf *Raft) appendEntriesToPeer(peerIdx int) {
 			return
 		}
 		args := rf.getAppendEntriesArgs(peerIdx)
-		DPrintf("master %v to worker %v args %+v", rf.me, peerIdx, args)
 		rf.resetAppendEntriesTimer(peerIdx)
 		rf.mu.Unlock()
 
@@ -487,6 +509,7 @@ func (rf *Raft) appendEntriesToPeer(peerIdx int) {
 			rf.changeRole(Follower)
 			rf.resetElectionTimer()
 			rf.term = reply.Term
+			rf.persist()
 			rf.mu.Unlock()
 			return
 		}
@@ -505,15 +528,14 @@ func (rf *Raft) appendEntriesToPeer(peerIdx int) {
 				// 只 commit 自己 term 的 index
 				rf.updateCommitIndex()
 			}
-			DPrintf("success master %v to worker %v entry %v commit %v next %v match %v", rf.me, peerIdx, rf.logEntries, rf.commitIndex, rf.nextIndex, rf.matchIndex)
+			rf.persist()
 			rf.mu.Unlock()
 			return
 		}
 
-		DPrintf("fail master %v to worker %v reply %+v", rf.me, peerIdx, reply)
-
 		if reply.NextIndex > 0 {
 			rf.nextIndex[peerIdx] = reply.NextIndex
+			rf.persist()
 			rf.mu.Unlock()
 			continue
 		}

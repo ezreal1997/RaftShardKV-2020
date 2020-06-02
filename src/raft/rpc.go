@@ -35,6 +35,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = rf.term
 	reply.VoteGranted = false
 
+	defer rf.persist()
+
 	if args.Term < rf.term {
 		return
 	} else if args.Term == rf.term {
@@ -85,7 +87,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	_, lastLogIndex := rf.getLastLogTermIndex()
 	if args.PreLogIndex == lastLogIndex {
-		DPrintf("worker %v 1", rf.me)
 		if rf.logEntries[args.PreLogIndex].Term == args.PreLogTerm {
 			reply.Success = true
 			rf.logEntries = append(rf.logEntries[:args.PreLogIndex+1], args.Entries...)
@@ -103,22 +104,20 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			reply.NextIndex = idx + 1
 		}
 	} else if args.PreLogIndex > lastLogIndex {
-		DPrintf("worker %v 2", rf.me)
 		reply.Success = false
 		reply.NextIndex = lastLogIndex + 1
 	} else {
-		DPrintf("worker %v 3", rf.me)
-		idx := args.PreLogIndex
+		idx := args.PreLogIndex + 1
 		newLogIdx := 0
 		if len(args.Entries) == 0 {
 			// worker 比 master entry 多
-			rf.logEntries = rf.logEntries[:args.PreLogIndex+1]
+			rf.logEntries = rf.logEntries[:idx+1]
 			reply.Success = false
 			if rf.logEntries[args.PreLogIndex].Term == args.PreLogTerm {
 				reply.NextIndex = args.PreLogIndex + 1
 			} else {
 				term := rf.logEntries[args.PreLogIndex].Term
-				for idx >= rf.commitIndex {
+				for idx > rf.commitIndex {
 					if rf.logEntries[idx].Term != term {
 						break
 					}
@@ -164,6 +163,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 	}
 
-	DPrintf("worker %v entry %v commit %v next %v match %v", rf.me, rf.logEntries, rf.commitIndex, rf.nextIndex, rf.matchIndex)
+	rf.persist()
 	rf.mu.Unlock()
 }
