@@ -359,10 +359,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	return rf
 }
 
+// Lock before use.
 func (rf *Raft) getLastLogTermIndex() (int, int) {
 	return rf.logEntries[len(rf.logEntries)-1].Term, len(rf.logEntries) - 1
 }
 
+// Lock before use.
 func (rf *Raft) changeRole(role Role) {
 	rf.role = role
 	switch role {
@@ -462,6 +464,7 @@ func (rf *Raft) startElection() {
 	rf.mu.Unlock()
 }
 
+// Lock before use.
 func (rf *Raft) resetAppendEntriesTimers() {
 	for i, _ := range rf.appendEntriesTimers {
 		rf.appendEntriesTimers[i].Stop()
@@ -469,6 +472,7 @@ func (rf *Raft) resetAppendEntriesTimers() {
 	}
 }
 
+// Lock before use.
 func (rf *Raft) resetAppendEntriesTimer(peerIdx int) {
 	rf.appendEntriesTimers[peerIdx].Stop()
 	rf.appendEntriesTimers[peerIdx].Reset(AppendEntriesTimeout)
@@ -544,6 +548,7 @@ func (rf *Raft) appendEntriesToPeer(peerIdx int) {
 	}
 }
 
+// Lock before use.
 func (rf *Raft) getAppendEntriesArgs(peerIdx int) AppendEntriesArgs {
 	preLogIndex, preLogTerm, logs := rf.getAppendLogs(peerIdx)
 	args := AppendEntriesArgs{
@@ -578,6 +583,7 @@ func (rf *Raft) getAppendLogs(peerIdx int) (preLogIndex, preLogTerm int, res []L
 	return
 }
 
+// Lock before use.
 func (rf *Raft) updateCommitIndex() {
 	hasCommit := false
 	for i := rf.commitIndex + 1; i < len(rf.logEntries); i++ {
