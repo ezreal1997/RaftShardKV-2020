@@ -1,12 +1,14 @@
 package kvraft
 
 import (
-	"../labgob"
-	"../labrpc"
 	"log"
-	"../raft"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"../labgob"
+	"../labrpc"
+	"../raft"
 )
 
 const Debug = 0
@@ -18,11 +20,23 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+const WaitOPTimeOut = time.Millisecond * 500
 
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	MsgID    msgID
+	ReqID    int64
+	ClientID int64
+	Key      string
+	Value    string
+	Method   string
+}
+
+type NotifyMsg struct {
+	Err   Err
+	Value string
 }
 
 type KVServer struct {
@@ -35,15 +49,70 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	stopCh      chan struct{}
+	msgNotify   map[int64]chan NotifyMsg
+	lastApplies map[int64]msgID // last apply put/append msg
+	data        map[string]string
+	persister   *raft.Persister
 }
 
+func (kv *KVServer) waitOP(op Op) (res NotifyMsg) {
+	if _, _, isLeader := kv.rf.Start(op); !isLeader {
+		res.Err = ErrWrongLeader
+		return
+	}
+
+	kv.mu.Lock()
+	ch := make(chan NotifyMsg, 1)
+	kv.msgNotify[op.ReqID] = ch
+	kv.mu.Unlock()
+
+	t := time.NewTimer(WaitOPTimeOut)
+	defer t.Stop()
+	select {
+	case res = <-ch:
+		kv.mu.Lock()
+		delete(kv.msgNotify, op.ReqID)
+		kv.mu.Unlock()
+		return
+	case <-t.C:
+		kv.mu.Lock()
+		delete(kv.msgNotify, op.ReqID)
+		kv.mu.Unlock()
+		res.Err = ErrTimeOut
+		return
+	}
+}
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	if _, isLeader := kv.rf.GetState(); !isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+	op := Op{
+		MsgID:    args.MsgID,
+		ReqID:    nrand(),
+		Key:      args.Key,
+		Method:   "Get",
+		ClientID: args.ClientID,
+	}
+	res := kv.waitOP(op)
+	reply.Err = res.Err
+	reply.Value = res.Value
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	op := Op{
+		MsgID:    args.MsgID,
+		ReqID:    nrand(),
+		Key:      args.Key,
+		Value:    args.Value,
+		Method:   args.Op,
+		ClientID: args.ClientID,
+	}
+	reply.Err = kv.waitOP(op).Err
 }
 
 //
@@ -60,6 +129,7 @@ func (kv *KVServer) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
 	kv.rf.Kill()
 	// Your code here, if desired.
+	close(kv.stopCh)
 }
 
 func (kv *KVServer) killed() bool {
@@ -86,16 +156,77 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})
 
-	kv := new(KVServer)
-	kv.me = me
-	kv.maxraftstate = maxraftstate
-
-	// You may need initialization code here.
-
-	kv.applyCh = make(chan raft.ApplyMsg)
+	kv := &KVServer{
+		mu:           sync.Mutex{},
+		me:           me,
+		applyCh:      make(chan raft.ApplyMsg),
+		dead:         0,
+		maxraftstate: maxraftstate,
+		stopCh:       make(chan struct{}),
+		msgNotify:    make(map[int64]chan NotifyMsg),
+		lastApplies:  make(map[int64]msgID),
+		data:         make(map[string]string),
+		persister:    persister,
+	}
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
-	// You may need initialization code here.
+	go kv.applyLoop()
 
 	return kv
+}
+
+func (kv *KVServer) applyLoop() {
+	for {
+		select {
+		case <-kv.stopCh:
+			return
+		case msg := <-kv.applyCh:
+			if !msg.CommandValid {
+				continue
+			}
+
+			op := msg.Command.(Op)
+			var isRepeated bool
+			kv.mu.Lock()
+			if val, ok := kv.lastApplies[op.ClientID]; ok {
+				isRepeated = val == op.MsgID
+			} else {
+				isRepeated = false
+			}
+			switch op.Method {
+			case "Put":
+				if !isRepeated {
+					kv.data[op.Key] = op.Value
+					kv.lastApplies[op.ClientID] = op.MsgID
+				}
+			case "Append":
+				if !isRepeated {
+					var val string
+					if v, ok := kv.data[op.Key]; ok {
+						val = v
+					} else {
+						val = ""
+					}
+					kv.data[op.Key] = val + op.Value
+					kv.lastApplies[op.ClientID] = op.MsgID
+				}
+			case "Get":
+			default:
+				log.Fatalf("unknown method: %s", op.Method)
+			}
+			if ch, ok := kv.msgNotify[op.ReqID]; ok {
+				var val string
+				if v, ok := kv.data[op.Key]; ok {
+					val = v
+				} else {
+					val = ""
+				}
+				ch <- NotifyMsg{
+					Err:   OK,
+					Value: val,
+				}
+			}
+			kv.mu.Unlock()
+		}
+	}
 }
