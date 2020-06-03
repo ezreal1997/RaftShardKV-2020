@@ -102,6 +102,9 @@ type Raft struct {
 	lastApplied int
 	nextIndex   []int
 	matchIndex  []int
+
+	lastSnapshotIndex int
+	lastSnapshotTerm  int
 }
 
 // return currentTerm and whether this server
@@ -120,19 +123,23 @@ func (rf *Raft) GetState() (int, bool) {
 //
 func (rf *Raft) persist() {
 	// Your code here (2C).
+	rf.persister.SaveRaftState(rf.getPersistData())
+}
+
+func (rf *Raft) getPersistData() []byte {
 	buf := new(bytes.Buffer)
 	enc := labgob.NewEncoder(buf)
-
 	if err := multierr.Combine(
 		enc.Encode(rf.term),
 		enc.Encode(rf.voteFor),
 		enc.Encode(rf.commitIndex),
+		enc.Encode(rf.lastSnapshotIndex),
+		enc.Encode(rf.lastSnapshotTerm),
 		enc.Encode(rf.logEntries),
 	); err != nil {
 		log.Fatalf("%v persist failed: %v", rf.me, err)
 	}
-
-	rf.persister.SaveRaftState(buf.Bytes())
+	return buf.Bytes()
 }
 
 //
@@ -147,16 +154,20 @@ func (rf *Raft) readPersist(data []byte) {
 	dec := labgob.NewDecoder(buf)
 
 	var (
-		term        int
-		voteFor     int
-		commitIndex int
-		logs        []LogEntry
+		term              int
+		voteFor           int
+		commitIndex       int
+		lastSnapshotIndex int
+		lastSnapshotTerm  int
+		logs              []LogEntry
 	)
 
 	if err := multierr.Combine(
 		dec.Decode(&term),
 		dec.Decode(&voteFor),
 		dec.Decode(&commitIndex),
+		dec.Decode(&lastSnapshotIndex),
+		dec.Decode(&lastSnapshotTerm),
 		dec.Decode(&logs),
 	); err != nil {
 		log.Fatalf("%v read persist failed: %v", rf.me, err)
@@ -306,6 +317,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		notifyApplyCh:       make(chan struct{}, 100),
 		stopCh:              make(chan struct{}),
 		lastApplied:         0,
+		lastSnapshotIndex:   0,
 	}
 	for i := range rf.peers {
 		rf.appendEntriesTimers[i] = time.NewTimer(AppendEntriesTimeout)
@@ -361,7 +373,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 // Lock before use.
 func (rf *Raft) getLastLogTermIndex() (int, int) {
-	return rf.logEntries[len(rf.logEntries)-1].Term, len(rf.logEntries) - 1
+	return rf.logEntries[len(rf.logEntries)-1].Term, rf.lastSnapshotIndex + len(rf.logEntries) - 1
 }
 
 // Lock before use.
@@ -538,10 +550,12 @@ func (rf *Raft) appendEntriesToPeer(peerIdx int) {
 		}
 
 		if reply.NextIndex > 0 {
+			if reply.NextIndex <= rf.lastSnapshotIndex {
+				go rf.sendInstallSnapshot(peerIdx)
+				rf.mu.Unlock()
+				return
+			}
 			rf.nextIndex[peerIdx] = reply.NextIndex
-			rf.persist()
-			rf.mu.Unlock()
-			continue
 		}
 
 		rf.mu.Unlock()
@@ -566,19 +580,18 @@ func (rf *Raft) getAppendLogs(peerIdx int) (preLogIndex, preLogTerm int, res []L
 	nextIdx := rf.nextIndex[peerIdx]
 	lastLogTerm, lastLogIndex := rf.getLastLogTermIndex()
 
-	if nextIdx > lastLogIndex {
-		// 没有需要发送的 log
+	if nextIdx <= rf.lastSnapshotIndex || nextIdx > lastLogIndex {
 		preLogIndex = lastLogIndex
 		preLogTerm = lastLogTerm
 		return
 	}
 
-	res = append(make([]LogEntry, 0), rf.logEntries[nextIdx:]...)
+	res = append(make([]LogEntry, 0), rf.logEntries[rf.getRelativeIdx(nextIdx):]...)
 	preLogIndex = nextIdx - 1
-	if preLogIndex < 0 {
-		preLogTerm = -1
+	if preLogIndex == rf.lastSnapshotIndex {
+		preLogTerm = rf.lastSnapshotTerm
 	} else {
-		preLogTerm = rf.logEntries[preLogIndex].Term
+		preLogTerm = rf.logEntries[preLogIndex-rf.lastSnapshotIndex].Term
 	}
 	return
 }
@@ -610,20 +623,25 @@ func (rf *Raft) updateCommitIndex() {
 
 func (rf *Raft) startApplyLogs() {
 	defer rf.applyTimer.Reset(ApplyInterval)
+
 	rf.mu.Lock()
-
-	if rf.commitIndex <= rf.lastApplied {
-		rf.mu.Unlock()
-		return
-	}
-
-	msg := make([]ApplyMsg, 0, rf.commitIndex-rf.lastApplied)
-	for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+	msg := make([]ApplyMsg, 0)
+	if rf.lastApplied < rf.lastSnapshotIndex {
 		msg = append(msg, ApplyMsg{
-			CommandValid: true,
-			Command:      rf.logEntries[i].Command,
-			CommandIndex: i,
+			CommandValid: false,
+			Command:      "installSnapShot",
+			CommandIndex: rf.lastSnapshotIndex,
 		})
+	} else if rf.commitIndex <= rf.lastApplied {
+		// Do nothing.
+	} else {
+		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+			msg = append(msg, ApplyMsg{
+				CommandValid: true,
+				Command:      rf.logEntries[rf.getRelativeIdx(i)].Command,
+				CommandIndex: i,
+			})
+		}
 	}
 	rf.mu.Unlock()
 

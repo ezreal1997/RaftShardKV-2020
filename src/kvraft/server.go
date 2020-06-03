@@ -1,10 +1,13 @@
 package kvraft
 
 import (
+	"bytes"
 	"log"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"go.uber.org/multierr"
 
 	"../labgob"
 	"../labrpc"
@@ -169,6 +172,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 		persister:    persister,
 	}
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	kv.readPersist(kv.persister.ReadSnapshot())
 
 	go kv.applyLoop()
 
@@ -182,9 +186,13 @@ func (kv *KVServer) applyLoop() {
 			return
 		case msg := <-kv.applyCh:
 			if !msg.CommandValid {
+				kv.mu.Lock()
+				kv.readPersist(kv.persister.ReadSnapshot())
+				kv.mu.Unlock()
 				continue
 			}
 
+			msgIdx := msg.CommandIndex
 			op := msg.Command.(Op)
 			var isRepeated bool
 			kv.mu.Lock()
@@ -214,6 +222,7 @@ func (kv *KVServer) applyLoop() {
 			default:
 				log.Fatalf("unknown method: %s", op.Method)
 			}
+			kv.saveSnapshot(msgIdx)
 			if ch, ok := kv.msgNotify[op.ReqID]; ok {
 				var val string
 				if v, ok := kv.data[op.Key]; ok {
@@ -228,5 +237,44 @@ func (kv *KVServer) applyLoop() {
 			}
 			kv.mu.Unlock()
 		}
+	}
+}
+
+func (kv *KVServer) saveSnapshot(logIndex int) {
+	if kv.maxraftstate == -1 {
+		return
+	}
+	if kv.persister.RaftStateSize() < kv.maxraftstate {
+		return
+	}
+
+	buf := new(bytes.Buffer)
+	enc := labgob.NewEncoder(buf)
+	if err := enc.Encode(kv.data); err != nil {
+		panic(err)
+	}
+	if err := enc.Encode(kv.lastApplies); err != nil {
+		panic(err)
+	}
+	kv.rf.SavePersistAndSnapshot(logIndex, buf.Bytes())
+}
+
+func (kv *KVServer) readPersist(data []byte) {
+	if data == nil || len(data) < 1 { // bootstrap without any state?
+		return
+	}
+
+	buf := bytes.NewBuffer(data)
+	dec := labgob.NewDecoder(buf)
+
+	kvData, lastApplies := make(map[string]string), make(map[int64]msgID)
+	if err := multierr.Combine(
+		dec.Decode(&kvData),
+		dec.Decode(&lastApplies),
+	); err != nil {
+		log.Fatalf("kv server read persist failed: %v", err)
+	} else {
+		kv.data = kvData
+		kv.lastApplies = lastApplies
 	}
 }

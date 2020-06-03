@@ -1,5 +1,7 @@
 package raft
 
+import "log"
+
 type AppendEntriesArgs struct {
 	Term         int
 	LeaderID     int
@@ -25,6 +27,18 @@ type RequestVoteArgs struct {
 type RequestVoteReply struct {
 	Term        int
 	VoteGranted bool
+}
+
+type InstallSnapshotArgs struct {
+	Term              int
+	LeaderID          int
+	LastIncludedIndex int
+	LastIncludedTerm  int
+	Data              []byte
+}
+
+type InstallSnapshotReply struct {
+	Term int
 }
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
@@ -87,7 +101,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	_, lastLogIndex := rf.getLastLogTermIndex()
 	if args.PreLogIndex == lastLogIndex {
-		if rf.logEntries[args.PreLogIndex].Term == args.PreLogTerm {
+		if rf.logEntries[rf.getRelativeIdx(args.PreLogIndex)].Term == args.PreLogTerm {
 			reply.Success = true
 			rf.logEntries = append(rf.logEntries[:args.PreLogIndex+1], args.Entries...)
 			_, idx := rf.getLastLogTermIndex()
@@ -96,9 +110,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			// 这里如果 term 不相等只有可能是 worker 的 term 更小
 			reply.Success = false
 			idx := args.PreLogIndex
-			term := rf.logEntries[idx].Term
-			for idx > rf.commitIndex && rf.logEntries[idx].Term == term {
-				idx -= 1
+			term := rf.logEntries[rf.getRelativeIdx(idx)].Term
+			for idx > rf.commitIndex && idx > rf.lastSnapshotIndex && rf.logEntries[rf.getRelativeIdx(idx)].Term == term {
+				idx--
 			}
 			rf.logEntries = rf.logEntries[:idx+1]
 			reply.NextIndex = idx + 1
@@ -113,12 +127,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			// worker 比 master entry 多
 			rf.logEntries = rf.logEntries[:idx+1]
 			reply.Success = false
-			if rf.logEntries[args.PreLogIndex].Term == args.PreLogTerm {
+			if rf.logEntries[rf.getRelativeIdx(args.PreLogIndex)].Term == args.PreLogTerm {
 				reply.NextIndex = args.PreLogIndex + 1
 			} else {
-				term := rf.logEntries[args.PreLogIndex].Term
-				for idx > rf.commitIndex {
-					if rf.logEntries[idx].Term != term {
+				term := rf.logEntries[rf.getRelativeIdx(args.PreLogIndex)].Term
+				for idx > rf.commitIndex && idx > rf.lastSnapshotIndex {
+					if rf.logEntries[rf.getRelativeIdx(idx)].Term != term {
 						break
 					}
 					idx--
@@ -129,7 +143,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			// 比较 args 中的 entry 和自己的是否相同
 			reply.Success = true
 			for idx <= lastLogIndex && newLogIdx < len(args.Entries) {
-				if rf.logEntries[idx].Term != args.Entries[newLogIdx].Term {
+				if rf.logEntries[rf.getRelativeIdx(idx)].Term != args.Entries[newLogIdx].Term {
 					rf.logEntries = rf.logEntries[:idx]
 					reply.Success = false
 					reply.NextIndex = idx
@@ -165,4 +179,40 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.persist()
 	rf.mu.Unlock()
+}
+
+func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	reply.Term = rf.term
+	if args.Term < rf.term {
+		return
+	}
+
+	if args.Term > rf.term || rf.role != Follower {
+		rf.term = args.Term
+		rf.changeRole(Follower)
+		rf.resetElectionTimer()
+		defer rf.persist()
+	}
+
+	if rf.lastSnapshotIndex >= args.LastIncludedIndex {
+		return
+	}
+
+	start := args.LastIncludedIndex - rf.lastSnapshotIndex
+	if start < 0 {
+		log.Fatal("install snapshot failed: unexpect index")
+	} else if start >= len(rf.logEntries) {
+		rf.logEntries = make([]LogEntry, 1)
+		rf.logEntries[0].Term = args.LastIncludedTerm
+	} else {
+		rf.logEntries = rf.logEntries[start:]
+	}
+
+	rf.lastSnapshotIndex = args.LastIncludedIndex
+	rf.lastSnapshotTerm = args.LastIncludedTerm
+
+	rf.persister.SaveStateAndSnapshot(rf.getPersistData(), args.Data)
 }
