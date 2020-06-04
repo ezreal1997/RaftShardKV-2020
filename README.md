@@ -4,6 +4,6 @@
 
 - [x] Lab1 MapReduce
 - [x] Lab2 Raft
-- [ ] Lab3 Fault-tolerant Key/Value Service
+- [x] Lab3 Fault-tolerant Key/Value Service
 - [ ] Lab4 Sharded Key/Value Service
 

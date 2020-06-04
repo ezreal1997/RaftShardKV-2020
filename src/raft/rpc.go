@@ -103,7 +103,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.PreLogIndex == lastLogIndex {
 		if rf.logEntries[rf.getRelativeIdx(args.PreLogIndex)].Term == args.PreLogTerm {
 			reply.Success = true
-			rf.logEntries = append(rf.logEntries[:args.PreLogIndex+1], args.Entries...)
+			rf.logEntries = append(rf.logEntries[:rf.getRelativeIdx(args.PreLogIndex)+1], args.Entries...)
 			_, idx := rf.getLastLogTermIndex()
 			reply.NextIndex = idx + 1
 		} else {
@@ -114,7 +114,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			for idx > rf.commitIndex && idx > rf.lastSnapshotIndex && rf.logEntries[rf.getRelativeIdx(idx)].Term == term {
 				idx--
 			}
-			rf.logEntries = rf.logEntries[:idx+1]
+			rf.logEntries = rf.logEntries[:rf.getRelativeIdx(idx)+1]
 			reply.NextIndex = idx + 1
 		}
 	} else if args.PreLogIndex > lastLogIndex {
@@ -125,7 +125,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		newLogIdx := 0
 		if len(args.Entries) == 0 {
 			// worker 比 master entry 多
-			rf.logEntries = rf.logEntries[:idx+1]
+			rf.logEntries = rf.logEntries[:rf.getRelativeIdx(idx)+1]
 			reply.Success = false
 			if rf.logEntries[rf.getRelativeIdx(args.PreLogIndex)].Term == args.PreLogTerm {
 				reply.NextIndex = args.PreLogIndex + 1
@@ -137,29 +137,35 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 					}
 					idx--
 				}
-				rf.logEntries = rf.logEntries[:idx+1]
+				rf.logEntries = rf.logEntries[:rf.getRelativeIdx(idx)+1]
 			}
 		} else {
-			// 比较 args 中的 entry 和自己的是否相同
-			reply.Success = true
-			for idx <= lastLogIndex && newLogIdx < len(args.Entries) {
-				if rf.logEntries[rf.getRelativeIdx(idx)].Term != args.Entries[newLogIdx].Term {
-					rf.logEntries = rf.logEntries[:idx]
-					reply.Success = false
-					reply.NextIndex = idx
-					break
+			if args.PreLogIndex < rf.lastSnapshotIndex {
+				reply.Success = false
+				reply.NextIndex = rf.lastSnapshotIndex + 1
+			} else {
+				// 比较 args 中的 entry 和自己的是否相同
+				reply.Success = true
+				//log.Printf("%v idx %v lastIdx %v lastSnap %v logs %v", rf.me, idx, lastLogIndex, rf.lastSnapshotIndex, rf.logEntries)
+				for idx <= lastLogIndex && newLogIdx < len(args.Entries) {
+					if rf.logEntries[rf.getRelativeIdx(idx)].Term != args.Entries[newLogIdx].Term {
+						rf.logEntries = rf.logEntries[:rf.getRelativeIdx(idx)]
+						reply.Success = false
+						reply.NextIndex = idx
+						break
+					}
+					idx++
+					newLogIdx++
 				}
-				idx++
-				newLogIdx++
-			}
-			if reply.Success {
-				if newLogIdx < len(args.Entries) {
-					// 比较完成之后 args 中还剩有 entry
-					rf.logEntries = append(rf.logEntries[:idx], args.Entries[newLogIdx:]...)
-					_, idx := rf.getLastLogTermIndex()
-					reply.NextIndex = idx + 1
-				} else {
-					reply.NextIndex = idx
+				if reply.Success {
+					if newLogIdx < len(args.Entries) {
+						// 比较完成之后 args 中还剩有 entry
+						rf.logEntries = append(rf.logEntries[:rf.getRelativeIdx(idx)], args.Entries[newLogIdx:]...)
+						_, idx := rf.getLastLogTermIndex()
+						reply.NextIndex = idx + 1
+					} else {
+						reply.NextIndex = idx
+					}
 				}
 			}
 		}
@@ -167,12 +173,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	if reply.Success {
 		if rf.commitIndex < args.LeaderCommit {
-			_, idx := rf.getLastLogTermIndex()
-			if idx > args.LeaderCommit {
-				rf.commitIndex = args.LeaderCommit
-			} else {
-				rf.commitIndex = idx
-			}
+			rf.commitIndex = args.LeaderCommit
 			rf.notifyApplyCh <- struct{}{}
 		}
 	}

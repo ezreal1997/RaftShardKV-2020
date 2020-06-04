@@ -23,7 +23,7 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-const WaitOPTimeOut = time.Millisecond * 500
+const WaitOpTimeOut = time.Millisecond * 500
 
 type Op struct {
 	// Your definitions here.
@@ -70,7 +70,7 @@ func (kv *KVServer) waitOP(op Op) (res NotifyMsg) {
 	kv.msgNotify[op.ReqID] = ch
 	kv.mu.Unlock()
 
-	t := time.NewTimer(WaitOPTimeOut)
+	t := time.NewTimer(WaitOpTimeOut)
 	defer t.Stop()
 	select {
 	case res = <-ch:

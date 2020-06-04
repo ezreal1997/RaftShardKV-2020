@@ -175,6 +175,8 @@ func (rf *Raft) readPersist(data []byte) {
 	rf.term = term
 	rf.voteFor = voteFor
 	rf.commitIndex = commitIndex
+	rf.lastSnapshotIndex = lastSnapshotIndex
+	rf.lastSnapshotTerm = lastSnapshotTerm
 	rf.logEntries = logs
 }
 
@@ -599,7 +601,7 @@ func (rf *Raft) getAppendLogs(peerIdx int) (preLogIndex, preLogTerm int, res []L
 // Lock before use.
 func (rf *Raft) updateCommitIndex() {
 	hasCommit := false
-	for i := rf.commitIndex + 1; i < len(rf.logEntries); i++ {
+	for i := rf.commitIndex + 1; i <= len(rf.logEntries)+rf.lastSnapshotIndex; i++ {
 		count := 0
 		for _, m := range rf.matchIndex {
 			if m >= i {
