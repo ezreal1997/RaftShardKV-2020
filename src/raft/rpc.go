@@ -172,7 +172,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	if reply.Success {
-		if rf.commitIndex < args.LeaderCommit {
+		var minIndex int
+		_, lastLogIndex := rf.getLastLogTermIndex()
+		if args.LeaderCommit < lastLogIndex {
+			minIndex = args.LeaderCommit
+		} else {
+			minIndex = lastLogIndex
+		}
+		if rf.commitIndex < minIndex {
 			rf.commitIndex = args.LeaderCommit
 			rf.notifyApplyCh <- struct{}{}
 		}
