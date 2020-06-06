@@ -637,7 +637,7 @@ func (rf *Raft) startApplyLogs() {
 	} else if rf.commitIndex <= rf.lastApplied {
 		// Do nothing.
 	} else {
-		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+		for i := rf.lastApplied + 1; i <= rf.commitIndex && rf.getRelativeIdx(i) < len(rf.logEntries); i++ {
 			msg = append(msg, ApplyMsg{
 				CommandValid: true,
 				Command:      rf.logEntries[rf.getRelativeIdx(i)].Command,

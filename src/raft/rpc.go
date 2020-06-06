@@ -121,13 +121,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		reply.NextIndex = lastLogIndex + 1
 	} else {
-		idx := args.PreLogIndex + 1
 		newLogIdx := 0
 		if len(args.Entries) == 0 {
 			// worker 比 master entry 多
+			idx := args.PreLogIndex
 			rf.logEntries = rf.logEntries[:rf.getRelativeIdx(idx)+1]
 			reply.Success = false
-			if rf.logEntries[rf.getRelativeIdx(args.PreLogIndex)].Term == args.PreLogTerm {
+			if rf.getRelativeIdx(args.PreLogIndex) < 0 {
+				reply.NextIndex = rf.lastSnapshotIndex + 1
+			} else if rf.logEntries[rf.getRelativeIdx(args.PreLogIndex)].Term == args.PreLogTerm {
 				reply.NextIndex = args.PreLogIndex + 1
 			} else {
 				term := rf.logEntries[rf.getRelativeIdx(args.PreLogIndex)].Term
@@ -140,6 +142,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				rf.logEntries = rf.logEntries[:rf.getRelativeIdx(idx)+1]
 			}
 		} else {
+			idx := args.PreLogIndex + 1
 			if args.PreLogIndex < rf.lastSnapshotIndex {
 				reply.Success = false
 				reply.NextIndex = rf.lastSnapshotIndex + 1
