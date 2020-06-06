@@ -375,6 +375,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 // Lock before use.
 func (rf *Raft) getLastLogTermIndex() (int, int) {
+	if len(rf.logEntries) == 0 {
+		return rf.lastSnapshotTerm, rf.lastSnapshotIndex
+	}
 	return rf.logEntries[len(rf.logEntries)-1].Term, rf.lastSnapshotIndex + len(rf.logEntries) - 1
 }
 
