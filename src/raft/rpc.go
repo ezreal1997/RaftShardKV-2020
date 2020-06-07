@@ -1,6 +1,8 @@
 package raft
 
-import "log"
+import (
+	"log"
+)
 
 type AppendEntriesArgs struct {
 	Term         int
