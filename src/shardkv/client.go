@@ -8,11 +8,14 @@ package shardkv
 // talks to the group that holds the key's shard.
 //
 
-import "../labrpc"
-import "crypto/rand"
-import "math/big"
-import "../shardmaster"
-import "time"
+import (
+	"crypto/rand"
+	"math/big"
+	"time"
+
+	"../labrpc"
+	"../shardmaster"
+)
 
 //
 // which shard is a key in?
@@ -36,10 +39,11 @@ func nrand() int64 {
 }
 
 type Clerk struct {
-	sm       *shardmaster.Clerk
-	config   shardmaster.Config
-	make_end func(string) *labrpc.ClientEnd
+	sm      *shardmaster.Clerk
+	config  shardmaster.Config
+	makeEnd func(string) *labrpc.ClientEnd
 	// You will have to modify this struct.
+	clientID int64
 }
 
 //
@@ -51,11 +55,13 @@ type Clerk struct {
 // Config.Groups[gid][i] into a labrpc.ClientEnd on which you can
 // send RPCs.
 //
-func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.ClientEnd) *Clerk {
-	ck := new(Clerk)
-	ck.sm = shardmaster.MakeClerk(masters)
-	ck.make_end = make_end
-	// You'll have to add code here.
+func MakeClerk(masters []*labrpc.ClientEnd, makeEnd func(string) *labrpc.ClientEnd) *Clerk {
+	ck := &Clerk{
+		sm:       shardmaster.MakeClerk(masters),
+		makeEnd:  makeEnd,
+		clientID: nrand(),
+	}
+	ck.config = ck.sm.Query(-1)
 	return ck
 }
 
@@ -66,8 +72,12 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 // You will have to modify this function.
 //
 func (ck *Clerk) Get(key string) string {
-	args := GetArgs{}
-	args.Key = key
+	args := GetArgs{
+		Key:       key,
+		ClientID:  ck.clientID,
+		MsgID:     nrand(),
+		ConfigNum: ck.config.Num,
+	}
 
 	for {
 		shard := key2shard(key)
@@ -75,7 +85,7 @@ func (ck *Clerk) Get(key string) string {
 		if servers, ok := ck.config.Groups[gid]; ok {
 			// try each server for the shard.
 			for si := 0; si < len(servers); si++ {
-				srv := ck.make_end(servers[si])
+				srv := ck.makeEnd(servers[si])
 				var reply GetReply
 				ok := srv.Call("ShardKV.Get", &args, &reply)
 				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
@@ -91,8 +101,6 @@ func (ck *Clerk) Get(key string) string {
 		// ask master for the latest configuration.
 		ck.config = ck.sm.Query(-1)
 	}
-
-	return ""
 }
 
 //
@@ -105,13 +113,12 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	args.Value = value
 	args.Op = op
 
-
 	for {
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
 		if servers, ok := ck.config.Groups[gid]; ok {
 			for si := 0; si < len(servers); si++ {
-				srv := ck.make_end(servers[si])
+				srv := ck.makeEnd(servers[si])
 				var reply PutAppendReply
 				ok := srv.Call("ShardKV.PutAppend", &args, &reply)
 				if ok && reply.Err == OK {
