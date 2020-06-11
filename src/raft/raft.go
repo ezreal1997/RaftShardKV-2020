@@ -387,7 +387,7 @@ func (rf *Raft) changeRole(role Role) {
 	switch role {
 	case Follower:
 	case Candidate:
-		rf.term += 1
+		rf.term++
 		rf.voteFor = rf.me
 		rf.resetElectionTimer()
 	case Leader:

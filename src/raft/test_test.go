@@ -721,7 +721,7 @@ func TestFigure82C(t *testing.T) {
 			if cfg.rafts[s] == nil {
 				cfg.start1(s)
 				cfg.connect(s)
-				nup += 1
+				nup++
 			}
 		}
 	}
@@ -806,7 +806,7 @@ func TestFigure8Unreliable2C(t *testing.T) {
 			s := rand.Int() % servers
 			if cfg.connected[s] == false {
 				cfg.connect(s)
-				nup += 1
+				nup++
 			}
 		}
 	}

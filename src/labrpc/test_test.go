@@ -306,7 +306,7 @@ func TestConcurrentMany(t *testing.T) {
 				if reply != wanted {
 					t.Fatalf("wrong reply %v from Handler1, expecting %v", reply, wanted)
 				}
-				n += 1
+				n++
 			}
 		}(ii)
 	}
@@ -364,7 +364,7 @@ func TestUnreliable(t *testing.T) {
 				if reply != wanted {
 					t.Fatalf("wrong reply %v from Handler1, expecting %v", reply, wanted)
 				}
-				n += 1
+				n++
 			}
 		}(ii)
 	}
@@ -415,7 +415,7 @@ func TestConcurrentOne(t *testing.T) {
 			if reply != wanted {
 				t.Fatalf("wrong reply %v from Handler2, expecting %v", reply, wanted)
 			}
-			n += 1
+			n++
 		}(ii)
 	}
 

@@ -94,7 +94,7 @@ func checkType(t reflect.Type) {
 				fmt.Printf("labgob error: lower-case field %v of %v in RPC or persist/snapshot will break your Raft\n",
 					f.Name, t.Name())
 				mu.Lock()
-				errorCount += 1
+				errorCount++
 				mu.Unlock()
 			}
 			checkType(f.Type)
@@ -169,7 +169,7 @@ func checkDefault1(value reflect.Value, depth int, name string) {
 				fmt.Printf("labgob warning: Decoding into a non-default variable/field %v may not work\n",
 					what)
 			}
-			errorCount += 1
+			errorCount++
 			mu.Unlock()
 		}
 		return

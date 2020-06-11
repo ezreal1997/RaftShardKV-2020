@@ -403,7 +403,7 @@ func (rs *Server) AddService(svc *Service) {
 func (rs *Server) dispatch(req reqMsg) replyMsg {
 	rs.mu.Lock()
 
-	rs.count += 1
+	rs.count++
 
 	// split Raft.AppendEntries into service and method
 	dot := strings.LastIndex(req.svcMeth, ".")
