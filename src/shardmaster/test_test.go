@@ -35,7 +35,7 @@ func check(t *testing.T, groups []int, ck *Clerk) {
 	// more or less balanced sharding?
 	counts := map[int]int{}
 	for _, g := range c.Shards {
-		counts[g] += 1
+		counts[g]++
 	}
 	min := 257
 	max := 0

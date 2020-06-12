@@ -67,7 +67,7 @@ func TestStaticShards(t *testing.T) {
 	for done == false {
 		select {
 		case <-ch:
-			ndone += 1
+			ndone++
 		case <-time.After(time.Second * 2):
 			done = true
 			break
