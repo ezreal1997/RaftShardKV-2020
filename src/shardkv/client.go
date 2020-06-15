@@ -73,13 +73,13 @@ func MakeClerk(masters []*labrpc.ClientEnd, makeEnd func(string) *labrpc.ClientE
 //
 func (ck *Clerk) Get(key string) string {
 	args := GetArgs{
-		Key:       key,
-		ClientID:  ck.clientID,
-		MsgID:     nrand(),
-		ConfigNum: ck.config.Num,
+		Key:      key,
+		ClientID: ck.clientID,
+		MsgID:    nrand(),
 	}
 
 	for {
+		args.ConfigNum = ck.config.Num
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
 		if servers, ok := ck.config.Groups[gid]; ok {
@@ -108,12 +108,16 @@ func (ck *Clerk) Get(key string) string {
 // You will have to modify this function.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	args := PutAppendArgs{}
-	args.Key = key
-	args.Value = value
-	args.Op = op
+	args := PutAppendArgs{
+		MsgID:    nrand(),
+		ClientID: ck.clientID,
+		Key:      key,
+		Value:    value,
+		Op:       op,
+	}
 
 	for {
+		args.ConfigNum = ck.config.Num
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
 		if servers, ok := ck.config.Groups[gid]; ok {
