@@ -45,15 +45,15 @@ type ShardKV struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	config        shardmaster.Config
-	oldConfig     shardmaster.Config
-	notifyCh      map[int64]chan NotifyMsg
-	lastMsgIdx    [shardmaster.NShards]map[int64]int64
-	ownShards     map[int]struct{}
-	data          [shardmaster.NShards]map[string]string
-	waitShardIDs  map[int]struct{}
-	historyShards map[int]map[int]ShardData
-	masterClient  *shardmaster.Clerk
+	config       shardmaster.Config
+	oldConfig    shardmaster.Config
+	signalCh     map[int64]chan SignalMsg
+	lastMsgIdx   [shardmaster.NShards]map[int64]int64
+	ownShards    map[int]struct{}
+	data         [shardmaster.NShards]map[string]string
+	newShardIDs  map[int]struct{}
+	oldShards    map[int]map[int]ShardData
+	masterClient *shardmaster.Clerk
 
 	pullConfigTimer *time.Timer
 	pullShardsTimer *time.Timer
@@ -115,12 +115,12 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 		gid:             gid,
 		masters:         masters,
 		maxraftstate:    maxraftstate,
-		notifyCh:        make(map[int64]chan NotifyMsg),
+		signalCh:        make(map[int64]chan SignalMsg),
 		lastMsgIdx:      [10]map[int64]int64{},
 		ownShards:       make(map[int]struct{}),
 		data:            [shardmaster.NShards]map[string]string{},
-		waitShardIDs:    make(map[int]struct{}),
-		historyShards:   make(map[int]map[int]ShardData),
+		newShardIDs:     make(map[int]struct{}),
+		oldShards:       make(map[int]map[int]ShardData),
 		stopCh:          make(chan struct{}),
 		persister:       persister,
 		pullConfigTimer: time.NewTimer(PullConfigInterval),
@@ -190,7 +190,7 @@ func (kv *ShardKV) updateConfigLoop() {
 			config := kv.masterClient.Query(lastConfigNum + 1)
 			if config.Num == lastConfigNum+1 {
 				kv.mu.Lock()
-				if len(kv.waitShardIDs) == 0 && kv.config.Num+1 == config.Num {
+				if len(kv.newShardIDs) == 0 && kv.config.Num+1 == config.Num {
 					kv.mu.Unlock()
 					kv.rf.Start(config.Duplicate())
 				} else {
@@ -211,7 +211,7 @@ func (kv *ShardKV) getShardLoop() {
 			_, isLeader := kv.rf.GetState()
 			if isLeader {
 				kv.mu.Lock()
-				for shardID := range kv.waitShardIDs {
+				for shardID := range kv.newShardIDs {
 					go kv.pullShard(shardID, kv.oldConfig)
 				}
 				kv.mu.Unlock()
@@ -238,8 +238,8 @@ func (kv *ShardKV) genSnapshotData() []byte {
 	if err := multierr.Combine(
 		enc.Encode(kv.data),
 		enc.Encode(kv.lastMsgIdx),
-		enc.Encode(kv.waitShardIDs),
-		enc.Encode(kv.historyShards),
+		enc.Encode(kv.newShardIDs),
+		enc.Encode(kv.oldShards),
 		enc.Encode(kv.config),
 		enc.Encode(kv.oldConfig),
 		enc.Encode(kv.ownShards),
@@ -259,20 +259,20 @@ func (kv *ShardKV) readSnapShotData(data []byte) {
 	dec := labgob.NewDecoder(buf)
 
 	var (
-		kvs           [shardmaster.NShards]map[string]string
-		lastMsgIdx    [shardmaster.NShards]map[int64]int64
-		waitShardIDs  map[int]struct{}
-		historyShards map[int]map[int]ShardData
-		config        shardmaster.Config
-		oldConfig     shardmaster.Config
-		ownShards     map[int]struct{}
+		kvs         [shardmaster.NShards]map[string]string
+		lastMsgIdx  [shardmaster.NShards]map[int64]int64
+		newShardIDs map[int]struct{}
+		oldShards   map[int]map[int]ShardData
+		config      shardmaster.Config
+		oldConfig   shardmaster.Config
+		ownShards   map[int]struct{}
 	)
 
 	if err := multierr.Combine(
 		dec.Decode(&kvs),
 		dec.Decode(&lastMsgIdx),
-		dec.Decode(&waitShardIDs),
-		dec.Decode(&historyShards),
+		dec.Decode(&newShardIDs),
+		dec.Decode(&oldShards),
 		dec.Decode(&config),
 		dec.Decode(&oldConfig),
 		dec.Decode(&ownShards),
@@ -281,8 +281,8 @@ func (kv *ShardKV) readSnapShotData(data []byte) {
 	} else {
 		kv.data = kvs
 		kv.lastMsgIdx = lastMsgIdx
-		kv.waitShardIDs = waitShardIDs
-		kv.historyShards = historyShards
+		kv.newShardIDs = newShardIDs
+		kv.oldShards = oldShards
 		kv.config = config
 		kv.oldConfig = oldConfig
 		kv.ownShards = ownShards
@@ -304,15 +304,15 @@ func (kv *ShardKV) applyOp(msg raft.ApplyMsg, op Op) {
 		isWrongGroup = true
 	} else if _, ok := kv.ownShards[shardID]; !ok {
 		isWrongGroup = true
-	} else if _, ok := kv.waitShardIDs[shardID]; ok {
+	} else if _, ok := kv.newShardIDs[shardID]; ok {
 		isWrongGroup = true
 	} else {
 		isWrongGroup = false
 	}
 
 	if isWrongGroup {
-		if ch, ok := kv.notifyCh[op.ReqID]; ok {
-			ch <- NotifyMsg{Err: ErrWrongGroup}
+		if ch, ok := kv.signalCh[op.ReqID]; ok {
+			ch <- SignalMsg{Err: ErrWrongGroup}
 		}
 		kv.mu.Unlock()
 		return
@@ -335,8 +335,8 @@ func (kv *ShardKV) applyOp(msg raft.ApplyMsg, op Op) {
 		log.Fatalf(fmt.Sprintf("invalid method: %s", op.Operation))
 	}
 	kv.saveSnapshot(msg.CommandIndex)
-	if ch, ok := kv.notifyCh[op.ReqID]; ok {
-		m := NotifyMsg{Err: OK}
+	if ch, ok := kv.signalCh[op.ReqID]; ok {
+		m := SignalMsg{Err: OK}
 		if op.Operation == "Get" {
 			m.Err, m.Value = kv.getData(op.Key)
 		}
@@ -387,7 +387,7 @@ func (kv *ShardKV) applyConfig(msg raft.ApplyMsg, config shardmaster.Config) {
 		}
 	}
 
-	historyShards := make(map[int]ShardData)
+	oldShards := make(map[int]ShardData)
 	for _, shardID := range deleteShardIDs {
 		delShardData := ShardData{
 			ConfigNum:  oldConfig.Num,
@@ -395,20 +395,20 @@ func (kv *ShardKV) applyConfig(msg raft.ApplyMsg, config shardmaster.Config) {
 			Data:       kv.data[shardID],
 			MsgIndexes: kv.lastMsgIdx[shardID],
 		}
-		historyShards[shardID] = delShardData
+		oldShards[shardID] = delShardData
 		kv.data[shardID] = make(map[string]string)
 		kv.lastMsgIdx[shardID] = make(map[int64]int64)
 	}
-	kv.historyShards[oldConfig.Num] = historyShards
+	kv.oldShards[oldConfig.Num] = oldShards
 
 	kv.ownShards = make(map[int]struct{})
 	for _, shardId := range ownShardIDs {
 		kv.ownShards[shardId] = struct{}{}
 	}
-	kv.waitShardIDs = make(map[int]struct{})
+	kv.newShardIDs = make(map[int]struct{})
 	if oldConfig.Num != 0 {
 		for _, shardId := range newShardIDs {
-			kv.waitShardIDs[shardId] = struct{}{}
+			kv.newShardIDs[shardId] = struct{}{}
 		}
 	}
 	kv.config = config.Duplicate()
@@ -424,7 +424,7 @@ func (kv *ShardKV) applyShardData(msg raft.ApplyMsg, data ShardData) {
 	if kv.config.Num != data.ConfigNum+1 {
 		return
 	}
-	if _, ok := kv.waitShardIDs[data.ShardNum]; !ok {
+	if _, ok := kv.newShardIDs[data.ShardNum]; !ok {
 		return
 	}
 	kv.data[data.ShardNum] = make(map[string]string)
@@ -435,14 +435,14 @@ func (kv *ShardKV) applyShardData(msg raft.ApplyMsg, data ShardData) {
 	for k, v := range data.MsgIndexes {
 		kv.lastMsgIdx[data.ShardNum][k] = v
 	}
-	delete(kv.waitShardIDs, data.ShardNum)
+	delete(kv.newShardIDs, data.ShardNum)
 	go kv.sendDeleteShardDataRequest(kv.oldConfig, data.ShardNum)
 }
 
 func (kv *ShardKV) applyCleanUp(msg raft.ApplyMsg, data DeleteShardDataArgs) {
 	kv.mu.Lock()
 	if kv.findHistoryData(data.ConfigNum, data.ShardNum) {
-		delete(kv.historyShards[data.ConfigNum], data.ShardNum)
+		delete(kv.oldShards[data.ConfigNum], data.ShardNum)
 	}
 	kv.saveSnapshot(msg.CommandIndex)
 	kv.mu.Unlock()
@@ -478,7 +478,7 @@ func (kv *ShardKV) sendDeleteShardDataRequest(config shardmaster.Config, shardID
 			}
 		}
 		kv.mu.Lock()
-		if kv.config.Num != config.Num+1 || len(kv.waitShardIDs) == 0 {
+		if kv.config.Num != config.Num+1 || len(kv.newShardIDs) == 0 {
 			kv.mu.Unlock()
 			break
 		}
@@ -487,8 +487,8 @@ func (kv *ShardKV) sendDeleteShardDataRequest(config shardmaster.Config, shardID
 }
 
 func (kv *ShardKV) findHistoryData(configNum int, shardID int) bool {
-	if _, ok := kv.historyShards[configNum]; ok {
-		if _, ok := kv.historyShards[configNum][shardID]; ok {
+	if _, ok := kv.oldShards[configNum]; ok {
+		if _, ok := kv.oldShards[configNum][shardID]; ok {
 			return true
 		}
 	}
@@ -506,7 +506,7 @@ func (kv *ShardKV) pullShard(shardID int, config shardmaster.Config) {
 		if ok := client.Call("ShardKV.FetchShardData", &args, &reply); ok {
 			if reply.Success {
 				kv.mu.Lock()
-				if _, ok = kv.waitShardIDs[shardID]; ok && kv.config.Num == config.Num+1 {
+				if _, ok = kv.newShardIDs[shardID]; ok && kv.config.Num == config.Num+1 {
 					replyCopy := reply.Duplicate()
 					shardDataArgs := ShardData{
 						ConfigNum:  args.ConfigNum,

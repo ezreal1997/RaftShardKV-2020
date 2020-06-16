@@ -4,7 +4,7 @@ import (
 	"time"
 )
 
-type NotifyMsg struct {
+type SignalMsg struct {
 	Err   Err
 	Value string
 }
@@ -46,7 +46,7 @@ func (kv *ShardKV) FetchShardData(args *FetchShardDataArgs, reply *FetchShardDat
 		return
 	}
 
-	if configData, ok := kv.historyShards[args.ConfigNum]; ok {
+	if configData, ok := kv.oldShards[args.ConfigNum]; ok {
 		if shardData, ok := configData[args.ShardNum]; ok {
 			reply.Success = true
 			reply.Data = make(map[string]string)
@@ -96,7 +96,7 @@ func (kv *ShardKV) DeleteShardData(args *DeleteShardDataArgs, reply *DeleteShard
 	}
 }
 
-func (kv *ShardKV) waitOP(op Op) (res NotifyMsg) {
+func (kv *ShardKV) waitOP(op Op) (res SignalMsg) {
 	kv.mu.Lock()
 	if op.ConfigNum == 0 || op.ConfigNum < kv.config.Num {
 		res.Err = ErrWrongGroup
@@ -110,9 +110,9 @@ func (kv *ShardKV) waitOP(op Op) (res NotifyMsg) {
 		return
 	}
 
-	ch := make(chan NotifyMsg, 1)
+	ch := make(chan SignalMsg, 1)
 	kv.mu.Lock()
-	kv.notifyCh[op.ReqID] = ch
+	kv.signalCh[op.ReqID] = ch
 	kv.mu.Unlock()
 
 	t := time.NewTimer(OperationTimeout)
@@ -120,12 +120,12 @@ func (kv *ShardKV) waitOP(op Op) (res NotifyMsg) {
 	select {
 	case res = <-ch:
 		kv.mu.Lock()
-		delete(kv.notifyCh, op.ReqID)
+		delete(kv.signalCh, op.ReqID)
 		kv.mu.Unlock()
 		return
 	case <-t.C:
 		kv.mu.Lock()
-		delete(kv.notifyCh, op.ReqID)
+		delete(kv.signalCh, op.ReqID)
 		kv.mu.Unlock()
 		res.Err = ErrTimeOut
 		return

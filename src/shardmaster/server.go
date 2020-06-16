@@ -18,7 +18,7 @@ type ShardMaster struct {
 
 	// Your data here.
 	configs     []Config
-	msgNotify   map[int64]chan NotifyMsg
+	msgNotify   map[int64]chan SignalMsg
 	lastApplies map[int64]msgID
 
 	stopCh chan struct{}
@@ -33,13 +33,13 @@ type Op struct {
 	ClientID int64
 }
 
-type NotifyMsg struct {
+type SignalMsg struct {
 	Err         Err
 	WrongLeader bool
 	Config      Config
 }
 
-func (sm *ShardMaster) execOp(method string, id msgID, clientID int64, args interface{}) NotifyMsg {
+func (sm *ShardMaster) execOp(method string, id msgID, clientID int64, args interface{}) SignalMsg {
 	return sm.waitOp(Op{
 		MsgID:    id,
 		ReqID:    nrand(),
@@ -49,7 +49,7 @@ func (sm *ShardMaster) execOp(method string, id msgID, clientID int64, args inte
 	})
 }
 
-func (sm *ShardMaster) waitOp(op Op) (res NotifyMsg) {
+func (sm *ShardMaster) waitOp(op Op) (res SignalMsg) {
 	if _, _, isLeader := sm.rf.Start(op); !isLeader {
 		res.Err = ErrWrongLeader
 		res.WrongLeader = true
@@ -57,7 +57,7 @@ func (sm *ShardMaster) waitOp(op Op) (res NotifyMsg) {
 	}
 
 	sm.mu.Lock()
-	ch := make(chan NotifyMsg, 1)
+	ch := make(chan SignalMsg, 1)
 	sm.msgNotify[op.ReqID] = ch
 	sm.mu.Unlock()
 
@@ -154,7 +154,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 		me:          me,
 		applyCh:     make(chan raft.ApplyMsg, 200),
 		configs:     []Config{{Groups: make(map[int][]string)}},
-		msgNotify:   make(map[int64]chan NotifyMsg),
+		msgNotify:   make(map[int64]chan SignalMsg),
 		lastApplies: make(map[int64]msgID),
 		stopCh:      make(chan struct{}),
 	}
@@ -190,7 +190,7 @@ func (sm *ShardMaster) run() {
 					panic("invalid method")
 				}
 			}
-			res := NotifyMsg{
+			res := SignalMsg{
 				Err:         OK,
 				WrongLeader: false,
 			}

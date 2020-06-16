@@ -37,7 +37,7 @@ type Op struct {
 	Method   string
 }
 
-type NotifyMsg struct {
+type SignalMsg struct {
 	Err   Err
 	Value string
 }
@@ -53,20 +53,20 @@ type KVServer struct {
 
 	// Your definitions here.
 	stopCh      chan struct{}
-	msgNotify   map[int64]chan NotifyMsg
+	msgNotify   map[int64]chan SignalMsg
 	lastApplies map[int64]msgID // last apply put/append msg
 	data        map[string]string
 	persister   *raft.Persister
 }
 
-func (kv *KVServer) waitOP(op Op) (res NotifyMsg) {
+func (kv *KVServer) waitOP(op Op) (res SignalMsg) {
 	if _, _, isLeader := kv.rf.Start(op); !isLeader {
 		res.Err = ErrWrongLeader
 		return
 	}
 
 	kv.mu.Lock()
-	ch := make(chan NotifyMsg, 1)
+	ch := make(chan SignalMsg, 1)
 	kv.msgNotify[op.ReqID] = ch
 	kv.mu.Unlock()
 
@@ -166,7 +166,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 		dead:         0,
 		maxraftstate: maxraftstate,
 		stopCh:       make(chan struct{}),
-		msgNotify:    make(map[int64]chan NotifyMsg),
+		msgNotify:    make(map[int64]chan SignalMsg),
 		lastApplies:  make(map[int64]msgID),
 		data:         make(map[string]string),
 		persister:    persister,
@@ -230,7 +230,7 @@ func (kv *KVServer) applyLoop() {
 				} else {
 					val = ""
 				}
-				ch <- NotifyMsg{
+				ch <- SignalMsg{
 					Err:   OK,
 					Value: val,
 				}
