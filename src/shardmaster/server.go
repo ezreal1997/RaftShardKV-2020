@@ -259,79 +259,99 @@ func (sm *ShardMaster) reschedule(config *Config) {
 				config.Shards[s] = g
 			}
 		}
-	} else {
+	} else if len(config.Groups) <= NShards {
 		avg := NShards / len(config.Groups)
-		shardsRedundant := NShards - avg*len(config.Groups)
-		type groupShards struct {
-			gid    int
-			shards map[int]struct{}
-		}
-		groupShardSet := make(map[int]map[int]struct{})
-		for gid := range config.Groups {
-			groupShardSet[gid] = make(map[int]struct{})
-		}
-		for i, gid := range config.Shards {
-			if _, ok := groupShardSet[gid]; !ok {
-				config.Shards[i] = 0
+		redundantShards := NShards - avg*len(config.Groups)
+		var lastGid, shardCount int
+		for shardCount < avg {
+			var groups []int
+			for g := range config.Groups {
+				groups = append(groups, g)
+			}
+			sort.Ints(groups)
+			for _, gid := range groups {
+				lastGid, shardCount = gid, 0
+				for _, shardGid := range config.Shards {
+					if shardGid == gid {
+						shardCount++
+					}
+				}
+				if shardCount == avg {
+					continue
+				} else if shardCount > avg && redundantShards == 0 {
+					num := 0
+					for shardNum, shardGid := range config.Shards {
+						if shardGid == gid {
+							if num == avg {
+								config.Shards[shardNum] = 0
+							} else {
+								num++
+							}
+						}
+					}
+				} else if shardCount > avg && redundantShards > 0 {
+					num := 0
+					for shardNum, shardGid := range config.Shards {
+						if shardGid == gid {
+							if num == avg+redundantShards {
+								config.Shards[shardNum] = 0
+							} else {
+								if num == avg {
+									redundantShards--
+								} else {
+									num++
+								}
+							}
+						}
+					}
+				} else {
+					for shardNum, shardGid := range config.Shards {
+						if shardCount == avg {
+							break
+						}
+						if shardGid == 0 && shardCount < avg {
+							config.Shards[shardNum] = gid
+						}
+					}
+				}
 			}
 		}
-		for s, gid := range config.Shards {
-			if gid == 0 {
+		if lastGid != 0 {
+			for shardNum, shardGid := range config.Shards {
+				if shardGid == 0 {
+					config.Shards[shardNum] = lastGid
+				}
+			}
+		}
+	} else {
+		gidSet := make(map[int]struct{})
+		emptyShards := make([]int, 0, NShards)
+		for shardNum, shardGid := range config.Shards {
+			if shardGid == 0 {
+				emptyShards = append(emptyShards, shardNum)
 				continue
 			}
-			groupShardSet[gid][s] = struct{}{}
-		}
-		gs := make([]*groupShards, 0)
-		for g, s := range groupShardSet {
-			gs = append(gs, &groupShards{
-				gid:    g,
-				shards: s,
-			})
-		}
-		sort.Slice(gs, func(i, j int) bool {
-			return len(gs[i].shards) > len(gs[j].shards)
-		})
-		for i, g := range gs {
-			shardNum := len(g.shards)
-			if shardNum > avg {
-				var extraNum int
-				if shardsRedundant > 0 {
-					extraNum = 1
-				} else {
-					extraNum = 0
-				}
-				for j, gid := range config.Shards {
-					if shardNum == avg+extraNum {
-						break
-					}
-					if gid == g.gid {
-						config.Shards[j] = 0
-						delete(gs[i].shards, j)
-						shardNum--
-					}
-				}
-				if extraNum > 0 {
-					shardsRedundant--
-				}
+			if _, ok := gidSet[shardGid]; ok {
+				emptyShards = append(emptyShards, shardNum)
+				config.Shards[shardNum] = 0
 			} else {
-				var extraNum int
-				if shardsRedundant > 0 {
-					extraNum = 1
-				} else {
-					extraNum = 0
+				gidSet[shardGid] = struct{}{}
+			}
+		}
+		pos := 0
+		if len(emptyShards) > 0 {
+			var groups []int
+			for gid := range config.Groups {
+				groups = append(groups, gid)
+			}
+			sort.Ints(groups)
+			for _, gid := range groups {
+				if _, ok := gidSet[gid]; !ok {
+					config.Shards[emptyShards[pos]] = gid
+					pos++
 				}
-				for j, gid := range config.Shards {
-					if shardNum == avg+extraNum {
-						break
-					}
-					if gid == 0 {
-						config.Shards[j] = g.gid
-						gs[i].shards[j] = struct{}{}
-						shardNum++
-					}
-				}
-				if extraNum > 0 {
-					shardsRedundant--
+				if pos >= len(emptyShards) {
+					break
 				}
 			}
 		}
