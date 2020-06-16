@@ -389,13 +389,13 @@ func (kv *ShardKV) applyConfig(msg raft.ApplyMsg, config shardmaster.Config) {
 
 	historyShards := make(map[int]ShardData)
 	for _, shardID := range deleteShardIDs {
-		mergeShardData := ShardData{
+		delShardData := ShardData{
 			ConfigNum:  oldConfig.Num,
 			ShardNum:   shardID,
 			Data:       kv.data[shardID],
 			MsgIndexes: kv.lastMsgIdx[shardID],
 		}
-		historyShards[shardID] = mergeShardData
+		historyShards[shardID] = delShardData
 		kv.data[shardID] = make(map[string]string)
 		kv.lastMsgIdx[shardID] = make(map[int64]int64)
 	}
