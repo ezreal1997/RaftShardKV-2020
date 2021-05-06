@@ -1,6 +1,6 @@
 # RaftShardKV
 
-[6.824 - Spring 2020](https://pdos.csail.mit.edu/6.824/general.html)
+[6.824 - Spring 2020](http://nil.lcs.mit.edu/6.824/2020/schedule.html)
 
 - [x] Lab1 MapReduce
 - [x] Lab2 Raft
