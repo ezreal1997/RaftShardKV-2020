@@ -1,6 +1,6 @@
 # RaftShardKV
 
-[6.824 - Spring 2020](http://nil.lcs.mit.edu/6.824/2020/schedule.html)
+[MIT 6.824 - Spring 2020](http://nil.lcs.mit.edu/6.824/2020/schedule.html)
 
 - [x] Lab1 MapReduce
 - [x] Lab2 Raft
@@ -23,10 +23,10 @@ go version go1.14.3 darwin/amd64
 
 - Good
 
-  Lab 1-4 使用脚本测试 500 次未出错。
+  Lab 1-4 tested for 1000 times without any error.
 
 - Bad
 
-  Raft 没有实现 [no-op entry](https://github.com/hashicorp/raft/blob/master/raft.go#L442)，虽然出问题的触发条件极为严格，但也是个隐患。
+  Current implementation of Raft did not implement [no-op entry](https://github.com/hashicorp/raft/blob/master/raft.go#L442), which may be a potential problem.
 
   
